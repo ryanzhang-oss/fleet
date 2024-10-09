@@ -104,6 +104,9 @@ const (
 
 	// UpdateRunInitializeFailedReason is the reason string of placement condition if the update run is failed to initialize.
 	UpdateRunInitializeFailedReason = "UpdateRunInitializedFailed"
+
+	// UpdateRunFailedReason is the reason string of placement condition if the staged update run failed.
+	UpdateRunFailedReason = "UpdateRunFailed"
 )
 
 // EqualCondition compares one condition with another; it ignores the LastTransitionTime and Message fields,

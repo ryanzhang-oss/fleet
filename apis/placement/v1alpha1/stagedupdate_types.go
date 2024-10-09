@@ -276,11 +276,11 @@ const (
 	// - "False": The stage updating is waiting/pausing.
 	StageUpdatingConditionProgressing StageUpdatingConditionType = "Progressing"
 
-	// ClusterUpdatingStatusConditionSucceeded indicates whether the stage updating is completed successfully.
+	// StageUpdatingConditionSucceeded indicates whether the stage updating is completed successfully.
 	// Its condition status can be one of the following:
 	// - "True": The stage updating is completed successfully.
 	// - "False": The stage updating encountered an error and stopped.
-	ClusterUpdatingStatusConditionSucceeded StageUpdatingConditionType = "Succeeded"
+	StageUpdatingConditionSucceeded StageUpdatingConditionType = "Succeeded"
 )
 
 // ClusterUpdatingStatus defines the status of the update run on a cluster.
