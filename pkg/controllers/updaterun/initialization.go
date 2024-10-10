@@ -189,7 +189,7 @@ func (r *Reconciler) generateStageByStrategy(ctx context.Context, scheduledBindi
 		klog.V(2).InfoS("Add a cluster to the delete stage", "cluster", binding.Spec.TargetCluster, "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stagedUpdateRun", klog.KObj(updateRun))
 		tobeDeletedCluster[i].ClusterName = binding.Spec.TargetCluster
 	}
-	// Sort the clusters in the stage based on the SortingLabelKey and cluster name
+	// Sort the clusters in the stage based on the cluster name
 	sort.Slice(tobeDeletedCluster, func(i, j int) bool {
 		return tobeDeletedCluster[i].ClusterName < tobeDeletedCluster[j].ClusterName
 	})
