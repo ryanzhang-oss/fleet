@@ -27,33 +27,33 @@ import (
 	"go.goms.io/fleet/pkg/utils/controller"
 )
 
-var errInitializedFailed = fmt.Errorf("%w: failed to initialize the StagedUpdateRun", errStagedUpdatedFailed)
+var errInitializedFailed = fmt.Errorf("%w: failed to initialize the StagedUpdateRun", errStagedUpdatedAborted)
 
 // initialize initializes the StagedUpdateRun object with all the stages computed during the initialization.
 // This function is called only once during the initialization of the StagedUpdateRun.
-func (r *Reconciler) initialize(ctx context.Context, updateRun *placementv1alpha1.StagedUpdateRun) error {
+func (r *Reconciler) initialize(ctx context.Context, updateRun *placementv1alpha1.StagedUpdateRun) ([]*placementv1beta1.ClusterResourceBinding, []*placementv1beta1.ClusterResourceBinding, error) {
 	// Validate the ClusterResourcePlacement object referenced by the StagedUpdateRun
 	placementName, err := r.validateCRP(ctx, updateRun)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	// Record the latest policy snapshot associated with the ClusterResourcePlacement
-	latestPolicySnapshot, err := r.determinePolicySnapshot(ctx, placementName, updateRun)
+	latestPolicySnapshot, _, err := r.determinePolicySnapshot(ctx, placementName, updateRun)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	// Collect the scheduled clusters by the corresponding ClusterResourcePlacement with the latest policy snapshot
 	scheduledBinding, tobeDeleted, err := r.collectScheduledClusters(ctx, placementName, latestPolicySnapshot, updateRun)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	// Compute the stages based on the StagedUpdateStrategy
-	if err = r.computeStage(ctx, scheduledBinding, tobeDeleted, updateRun); err != nil {
-		return err
+	if err = r.generateStageByStrategy(ctx, scheduledBinding, tobeDeleted, updateRun); err != nil {
+		return nil, nil, err
 	}
 	// Record the override snapshots associated with each cluster
 	if err = r.recordOverrideSnapshots(ctx, updateRun); err != nil {
-		return err
+		return nil, nil, err
 	}
 	// Update the StagedUpdateRun is initialized condition
 	meta.SetStatusCondition(&updateRun.Status.Conditions, metav1.Condition{
@@ -63,7 +63,7 @@ func (r *Reconciler) initialize(ctx context.Context, updateRun *placementv1alpha
 		Reason:             condition.UpdateRunInitializeSucceededReason,
 		Message:            "update run initialized successfully",
 	})
-	return r.Client.Status().Update(ctx, updateRun)
+	return scheduledBinding, tobeDeleted, r.Client.Status().Update(ctx, updateRun)
 }
 
 // validateCRP validates the ClusterResourcePlacement object referenced by the StagedUpdateRun.
@@ -90,7 +90,7 @@ func (r *Reconciler) validateCRP(ctx context.Context, updateRun *placementv1alph
 }
 
 // determinePolicySnapshot retrieves the latest policy snapshot associated with the ClusterResourcePlacement and validates it and records it in the StagedUpdateRun status.
-func (r *Reconciler) determinePolicySnapshot(ctx context.Context, placementName string, updateRun *placementv1alpha1.StagedUpdateRun) (*placementv1beta1.ClusterSchedulingPolicySnapshot, error) {
+func (r *Reconciler) determinePolicySnapshot(ctx context.Context, placementName string, updateRun *placementv1alpha1.StagedUpdateRun) (*placementv1beta1.ClusterSchedulingPolicySnapshot, int, error) {
 	updateRunRef := klog.KObj(updateRun)
 	// Get the latest policy snapshot
 	var policySnapshotList placementv1beta1.ClusterSchedulingPolicySnapshotList
@@ -100,17 +100,17 @@ func (r *Reconciler) determinePolicySnapshot(ctx context.Context, placementName 
 	}
 	if err := r.List(ctx, &policySnapshotList, latestPolicyMatcher); err != nil {
 		klog.ErrorS(err, "Failed to list the latest policy snapshots of a cluster resource placement", "clusterResourcePlacement", placementName, "stagedUpdateRun", updateRunRef)
-		return nil, err
+		return nil, -1, err
 	}
 	if len(policySnapshotList.Items) != 1 {
 		if len(policySnapshotList.Items) > 1 {
 			err := fmt.Errorf("more than one latest policy snapshot associated with cluster resource placement: %s", placementName)
 			klog.ErrorS(controller.NewUnexpectedBehaviorError(err), "Failed to find the latest policy snapshot", "clusterResourcePlacement", placementName, "numberOfSnapshot", len(policySnapshotList.Items), "stagedUpdateRun", updateRunRef)
-			return nil, fmt.Errorf("%w: %s", errInitializedFailed, err.Error())
+			return nil, -1, fmt.Errorf("%w: %s", errInitializedFailed, err.Error())
 		}
 		err := fmt.Errorf("no latest policy snapshot associated with cluster resource placement: %s", placementName)
 		klog.ErrorS(err, "Failed to find the latest policy snapshot", "clusterResourcePlacement", placementName, "numberOfSnapshot", len(policySnapshotList.Items), "stagedUpdateRun", updateRunRef)
-		return nil, fmt.Errorf("%w: %s", errInitializedFailed, err.Error())
+		return nil, -1, fmt.Errorf("%w: %s", errInitializedFailed, err.Error())
 	}
 	// Get the node count from the latest policy snapshot
 	latestPolicySnapshot := policySnapshotList.Items[0]
@@ -119,54 +119,55 @@ func (r *Reconciler) determinePolicySnapshot(ctx context.Context, placementName 
 	if err != nil {
 		annErr := fmt.Errorf("%w, the policySnapshot `%s` doesn't have node count annotation", err, latestPolicySnapshot.Name)
 		klog.ErrorS(controller.NewUnexpectedBehaviorError(annErr), "Failed to get the node count from the latestPolicySnapshot", "clusterResourcePlacement", placementName, "latestPolicySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", updateRunRef)
-		return nil, fmt.Errorf("%w: %s", errInitializedFailed, annErr.Error())
+		return nil, -1, fmt.Errorf("%w: %s", errInitializedFailed, annErr.Error())
 	}
 	updateRun.Status.PolicyObservedNodeCount = nodeCount
 	klog.V(2).InfoS("Found the corresponding policy snapshot", "policySnapshot", latestPolicySnapshot.Name, "observed CRP generation", updateRun.Status.PolicyObservedNodeCount, "stagedUpdateRun", updateRunRef)
 	if !condition.IsConditionStatusTrue(latestPolicySnapshot.GetCondition(string(placementv1beta1.PolicySnapshotScheduled)), latestPolicySnapshot.Generation) {
 		scheduleErr := fmt.Errorf("policy snapshot not fully scheduled yet")
 		klog.ErrorS(scheduleErr, "The policy snapshot is not scheduled successfully", "clusterResourcePlacement", placementName, "latestPolicySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", updateRunRef)
-		return nil, fmt.Errorf("%w: %s", errInitializedFailed, scheduleErr.Error())
+		return nil, -1, fmt.Errorf("%w: %s", errInitializedFailed, scheduleErr.Error())
 	}
-	return &latestPolicySnapshot, nil
+	return &latestPolicySnapshot, nodeCount, nil
 }
 
 // collectScheduledClusters retrieves the scheduled clusters from the latest policy snapshot and lists all the bindings according to its SchedulePolicyTrackingLabel.
-func (r *Reconciler) collectScheduledClusters(ctx context.Context, placementName string, latestPolicySnapshot *placementv1beta1.ClusterSchedulingPolicySnapshot, updateRun *placementv1alpha1.StagedUpdateRun) ([]placementv1beta1.ClusterResourceBinding, []placementv1beta1.ClusterResourceBinding, error) {
+func (r *Reconciler) collectScheduledClusters(ctx context.Context, placementName string, latestPolicySnapshot *placementv1beta1.ClusterSchedulingPolicySnapshot,
+	updateRun *placementv1alpha1.StagedUpdateRun) ([]*placementv1beta1.ClusterResourceBinding, []*placementv1beta1.ClusterResourceBinding, error) {
+	updateRunRef := klog.KObj(updateRun)
 	// List all the bindings according to the SchedulePolicyTrackingLabel
 	var bindingsList placementv1beta1.ClusterResourceBindingList
 	schedulePolicyMatcher := client.MatchingLabels{
 		placementv1beta1.CRPTrackingLabel: placementName,
 	}
 	if err := r.List(ctx, &bindingsList, schedulePolicyMatcher); err != nil {
-		klog.ErrorS(err, "Failed to list bindings according to the SchedulePolicyTrackingLabel", "policySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", klog.KObj(updateRun))
+		klog.ErrorS(err, "Failed to list bindings according to the SchedulePolicyTrackingLabel", "policySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", updateRunRef)
 		return nil, nil, err
 	}
-	var tobeDeleted, selectedBindings []placementv1beta1.ClusterResourceBinding
-	for _, binding := range bindingsList.Items {
+	var tobeDeleted, selectedBindings []*placementv1beta1.ClusterResourceBinding
+	for i, binding := range bindingsList.Items {
 		if binding.Spec.SchedulingPolicySnapshotName == latestPolicySnapshot.Name {
 			if binding.Spec.State != placementv1beta1.BindingStateScheduled {
 				return nil, nil, controller.NewUnexpectedBehaviorError(fmt.Errorf("binding `%s`'s state %s is not scheduled", binding.Name, binding.Spec.State))
 			}
-			klog.V(2).InfoS("Found a scheduled binding", "binding", binding.Name, "policySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", klog.KObj(updateRun))
-			selectedBindings = append(selectedBindings, binding)
+			klog.V(2).InfoS("Found a scheduled binding", "binding", binding.Name, "policySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", updateRunRef)
+			selectedBindings = append(selectedBindings, &bindingsList.Items[i])
 		} else {
-			klog.V(2).InfoS("Found a to be deleted binding", "binding", binding.Name, "policySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", klog.KObj(updateRun))
-			tobeDeleted = append(tobeDeleted, binding)
+			klog.V(2).InfoS("Found a to be deleted binding", "binding", binding.Name, "policySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", updateRunRef)
+			tobeDeleted = append(tobeDeleted, &bindingsList.Items[i])
 		}
 	}
 	if len(selectedBindings) == 0 {
 		err := fmt.Errorf("no scheduled bindings found for the policy snapshot: %s", latestPolicySnapshot.Name)
-		klog.ErrorS(err, "Failed to find the scheduled bindings", "policySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", klog.KObj(updateRun))
+		klog.ErrorS(err, "Failed to find the scheduled bindings", "policySnapshot", latestPolicySnapshot.Name, "stagedUpdateRun", updateRunRef)
 		return nil, nil, fmt.Errorf("%w: %s", errInitializedFailed, err.Error())
 	}
 	return selectedBindings, tobeDeleted, nil
 }
 
-// computeStage computes the stages based on the StagedUpdateStrategy the StagedUpdateRun references.
-func (r *Reconciler) computeStage(ctx context.Context, scheduledBindings, tobeDeletedBindings []placementv1beta1.ClusterResourceBinding, updateRun *placementv1alpha1.StagedUpdateRun) error {
+// generateStageByStrategy computes the stages based on the StagedUpdateStrategy the StagedUpdateRun references.
+func (r *Reconciler) generateStageByStrategy(ctx context.Context, scheduledBindings, tobeDeletedBindings []*placementv1beta1.ClusterResourceBinding, updateRun *placementv1alpha1.StagedUpdateRun) error {
 	// Fetch the StagedUpdateStrategy referenced by StagedUpdateStrategyRef
-	updateRunRef := klog.KObj(updateRun)
 	var updateStrategy placementv1alpha1.StagedUpdateStrategy
 	if err := r.Client.Get(ctx, types.NamespacedName{Name: updateRun.Spec.StagedUpdateStrategyRef.Name, Namespace: updateRun.Spec.StagedUpdateStrategyRef.Namespace}, &updateStrategy); err != nil {
 		klog.ErrorS(err, "Failed to get StagedUpdateStrategy", "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name)
@@ -178,7 +179,32 @@ func (r *Reconciler) computeStage(ctx context.Context, scheduledBindings, tobeDe
 	}
 	// this won't change even if the stagedUpdateStrategy changes or is deleted after the updateRun is initialized
 	updateRun.Status.StagedUpdateStrategySnapshot = &updateStrategy.Spec
+	// Record the stages in the StagedUpdateRun status
+	err := r.computeRunStageStatus(ctx, scheduledBindings, updateRun)
+	if err != nil {
+		return err
+	}
+	// Record the clusters to be deleted
+	tobeDeletedCluster := make([]placementv1alpha1.ClusterUpdatingStatus, len(tobeDeletedBindings))
+	for i, binding := range tobeDeletedBindings {
+		klog.V(2).InfoS("Add a cluster to the delete stage", "cluster", binding.Spec.TargetCluster, "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stagedUpdateRun", klog.KObj(updateRun))
+		tobeDeletedCluster[i].ClusterName = binding.Spec.TargetCluster
+	}
+	// Sort the clusters in the stage based on the cluster name
+	sort.Slice(tobeDeletedCluster, func(i, j int) bool {
+		return tobeDeletedCluster[i].ClusterName < tobeDeletedCluster[j].ClusterName
+	})
+	updateRun.Status.DeletionStageStatus = &placementv1alpha1.StageUpdatingStatus{
+		StageName: placementv1alpha1.UpdateRunDeleteStageName,
+		Clusters:  tobeDeletedCluster,
+	}
+	return nil
+}
 
+// computeRunStageStatus computes the stages based on the StagedUpdateStrategy and scheduled run and records them in the StagedUpdateRun status.
+func (r *Reconciler) computeRunStageStatus(ctx context.Context, scheduledBindings []*placementv1beta1.ClusterResourceBinding, updateRun *placementv1alpha1.StagedUpdateRun) error {
+	updateRunRef := klog.KObj(updateRun)
+	stagedUpdateStrategyName := updateRun.Spec.StagedUpdateStrategyRef.Name
 	// Map to track clusters and ensure they appear in only one stage
 	allSelectedClusters := make(map[string]bool, len(scheduledBindings))
 	allPlacedClusters := make(map[string]bool)
@@ -186,21 +212,26 @@ func (r *Reconciler) computeStage(ctx context.Context, scheduledBindings, tobeDe
 		allSelectedClusters[binding.Spec.TargetCluster] = true
 	}
 	// Apply the label selectors from the StagedUpdateStrategy to filter the clusters
-	for _, stage := range updateStrategy.Spec.Stages {
+	for _, stage := range updateRun.Status.StagedUpdateStrategySnapshot.Stages {
+		if err := validateAfterStageTask(stage.AfterStageTasks); err != nil {
+			klog.ErrorS(err, "Failed to validate the after stage tasks", "stagedUpdateStrategy", stagedUpdateStrategyName, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
+			return fmt.Errorf("%w: the after stage tasks are invalide, stagedUpdateStrategy is `%s`, stage Name is `%s`, err = %s", errInitializedFailed, stagedUpdateStrategyName, stage.Name, err.Error())
+
+		}
 		curSageUpdatingStatus := placementv1alpha1.StageUpdatingStatus{
 			StageName: stage.Name,
 		}
 		var curStageClusters []clusterv1beta1.MemberCluster
 		labelSelector, err := metav1.LabelSelectorAsSelector(stage.LabelSelector)
 		if err != nil {
-			klog.ErrorS(err, "Failed to convert label selector", "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stage", stage.Name, "labelSelector", stage.LabelSelector, "stagedUpdateRun", updateRunRef)
-			return err
+			klog.ErrorS(err, "Failed to convert label selector", "stagedUpdateStrategy", stagedUpdateStrategyName, "stage", stage.Name, "labelSelector", stage.LabelSelector, "stagedUpdateRun", updateRunRef)
+			return fmt.Errorf("%w: the stage label selector is invalide, stagedUpdateStrategy is `%s`, stage Name is `%s`, err = %s", errInitializedFailed, stagedUpdateStrategyName, stage.Name, err.Error())
 		}
 		// List all the clusters that match the label selector
 		clusterList := &clusterv1beta1.MemberClusterList{}
 		listOptions := &client.ListOptions{LabelSelector: labelSelector}
 		if err = r.List(ctx, clusterList, listOptions); err != nil {
-			klog.ErrorS(err, "Failed to list clusters for the stage", "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
+			klog.ErrorS(err, "Failed to list clusters for the stage", "stagedUpdateStrategy", stagedUpdateStrategyName, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
 			return err
 		}
 		// intersect the selected clusters with the clusters in the stage
@@ -208,7 +239,7 @@ func (r *Reconciler) computeStage(ctx context.Context, scheduledBindings, tobeDe
 			if allSelectedClusters[cluster.Name] {
 				if allPlacedClusters[cluster.Name] {
 					err = fmt.Errorf("cluster `%s` appears in more than one stage", cluster.Name)
-					klog.ErrorS(err, "Failed to compute the stages", "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
+					klog.ErrorS(err, "Failed to compute the stages", "stagedUpdateStrategy", stagedUpdateStrategyName, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
 					return fmt.Errorf("%w: %s", errInitializedFailed, err.Error())
 				}
 				if stage.SortingLabelKey != nil {
@@ -216,7 +247,7 @@ func (r *Reconciler) computeStage(ctx context.Context, scheduledBindings, tobeDe
 					_, err = strconv.Atoi(cluster.Labels[*stage.SortingLabelKey])
 					if err != nil {
 						sortingKeyErr := fmt.Errorf("the sorting label `%s` on cluster `%s` is not valid", *stage.SortingLabelKey, cluster.Name)
-						klog.ErrorS(sortingKeyErr, "The sorting label is not an integer", "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
+						klog.ErrorS(sortingKeyErr, "The sorting label is not an integer", "stagedUpdateStrategy", stagedUpdateStrategyName, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
 						return fmt.Errorf("%w: %s", errInitializedFailed, sortingKeyErr.Error())
 					}
 				}
@@ -227,7 +258,7 @@ func (r *Reconciler) computeStage(ctx context.Context, scheduledBindings, tobeDe
 		// Check if the stage has any clusters selected
 		if len(curStageClusters) == 0 {
 			err = fmt.Errorf("stage '%s' has no clusters selected", stage.Name)
-			klog.Error(err, "No cluster is selected for the stage", "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
+			klog.Error(err, "No cluster is selected for the stage", "stagedUpdateStrategy", stagedUpdateStrategyName, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
 			return fmt.Errorf("%w: %s", errInitializedFailed, err.Error())
 		}
 		// Sort the clusters in the stage based on the SortingLabelKey and cluster name
@@ -247,7 +278,7 @@ func (r *Reconciler) computeStage(ctx context.Context, scheduledBindings, tobeDe
 		// Record the clusters in the stage
 		curSageUpdatingStatus.Clusters = make([]placementv1alpha1.ClusterUpdatingStatus, len(curStageClusters))
 		for i, cluster := range curStageClusters {
-			klog.V(2).InfoS("Add a cluster to stage", "cluster", cluster.Name, "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
+			klog.V(2).InfoS("Add a cluster to stage", "cluster", cluster.Name, "stagedUpdateStrategy", stagedUpdateStrategyName, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
 			curSageUpdatingStatus.Clusters[i].ClusterName = cluster.Name
 		}
 		updateRun.Status.StagesStatus = append(updateRun.Status.StagesStatus, curSageUpdatingStatus)
@@ -257,25 +288,26 @@ func (r *Reconciler) computeStage(ctx context.Context, scheduledBindings, tobeDe
 		err := fmt.Errorf("some clusters are not placed in any stage")
 		for cluster := range allSelectedClusters {
 			if !allPlacedClusters[cluster] {
-				klog.ErrorS(err, "one cluster is not placed in any stage", "selectedCluster", cluster, "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stagedUpdateRun", updateRunRef)
+				klog.ErrorS(err, "one cluster is not placed in any stage", "selectedCluster", cluster, "stagedUpdateStrategy", stagedUpdateStrategyName, "stagedUpdateRun", updateRunRef)
 				r.recorder.Event(updateRun, corev1.EventTypeWarning, "MissingCluster", fmt.Sprintf("The cluster `%s` in not selected in any stage", cluster))
 			}
 		}
 		return fmt.Errorf("%w: %s", errInitializedFailed, err.Error())
 	}
-	// Record the clusters to be deleted
-	tobeDeletedCluster := make([]placementv1alpha1.ClusterUpdatingStatus, len(tobeDeletedBindings))
-	for i, binding := range tobeDeletedBindings {
-		klog.V(2).InfoS("Add a cluster to the delete stage", "cluster", binding.Spec.TargetCluster, "stagedUpdateStrategy", updateRun.Spec.StagedUpdateStrategyRef.Name, "stagedUpdateRun", updateRunRef)
-		tobeDeletedCluster[i].ClusterName = binding.Spec.TargetCluster
-	}
-	// Sort the clusters in the stage based on the SortingLabelKey and cluster name
-	sort.Slice(tobeDeletedCluster, func(i, j int) bool {
-		return tobeDeletedCluster[i].ClusterName < tobeDeletedCluster[j].ClusterName
-	})
-	updateRun.Status.DeletionStageStatus = &placementv1alpha1.StageUpdatingStatus{
-		StageName: placementv1alpha1.UpdateRunDeleteStageName,
-		Clusters:  tobeDeletedCluster,
+	return nil
+}
+
+// validateAfterStageTask validates the afterStageTask in the stage defined in updateRunStrategy.
+func validateAfterStageTask(afterStageTasks []placementv1alpha1.AfterStageTask) error {
+	for _, afterStageTask := range afterStageTasks {
+		if afterStageTask.Type == placementv1alpha1.AfterStageTaskTypeTimedWait {
+			if afterStageTask.WaitTime.Duration == 0 {
+				return fmt.Errorf("the wait task duration is 0")
+			}
+			if afterStageTask.WaitTime.Duration < 0 {
+				return fmt.Errorf("the wait task duration is negative")
+			}
+		}
 	}
 	return nil
 }

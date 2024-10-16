@@ -276,11 +276,11 @@ const (
 	// - "False": The stage updating is waiting/pausing.
 	StageUpdatingConditionProgressing StageUpdatingConditionType = "Progressing"
 
-	// ClusterUpdatingStatusConditionSucceeded indicates whether the stage updating is completed successfully.
+	// StageUpdatingConditionSucceeded indicates whether the stage updating is completed successfully.
 	// Its condition status can be one of the following:
 	// - "True": The stage updating is completed successfully.
 	// - "False": The stage updating encountered an error and stopped.
-	ClusterUpdatingStatusConditionSucceeded StageUpdatingConditionType = "Succeeded"
+	StageUpdatingConditionSucceeded StageUpdatingConditionType = "Succeeded"
 )
 
 // ClusterUpdatingStatus defines the status of the update run on a cluster.
@@ -318,17 +318,16 @@ type ClusterUpdatingStatus struct {
 type ClusterUpdatingStatusConditionType string
 
 const (
-	// UpdatingStatusConditionTypeStarted indicates whether the cluster updating has started.
+	// ClusterUpdatingConditionStarted indicates whether the cluster updating has started.
 	// Its condition status can be one of the following:
 	// - "True": The cluster updating has started.
-	// - "False": The stage updating has not started.
-	UpdatingStatusConditionTypeStarted ClusterUpdatingStatusConditionType = "Started"
+	ClusterUpdatingConditionStarted ClusterUpdatingStatusConditionType = "Started"
 
-	// UpdatingStatusConditionTypeSucceeded indicates whether the cluster updating is completed successfully.
+	// ClusterUpdatingConditionSucceeded indicates whether the cluster updating is completed successfully.
 	// Its condition status can be one of the following:
 	// - "True": The cluster updating is completed successfully.
 	// - "False": The cluster updating encountered an error and stopped.
-	UpdatingStatusConditionTypeSucceeded ClusterUpdatingStatusConditionType = "Succeeded"
+	ClusterUpdatingConditionSucceeded ClusterUpdatingStatusConditionType = "Succeeded"
 )
 
 type AfterStageTaskStatus struct {
@@ -382,12 +381,12 @@ const (
 	// - "False": The approval request has not been approved.
 	AfterStageTaskConditionApprovalRequestApproved AfterStageTaskConditionType = "ApprovalRequestApproved"
 
-	// AfterStageTaskConditionApprovalWaitTimeElapsed indicates if the wait time after each stage has elapsed.
+	// AfterStageTaskConditionWaitTimeElapsed indicates if the wait time after each stage has elapsed.
 	// If the status is "False", the condition message will include the remaining wait time.
 	// Its condition status can be:
 	// - "True": The wait time has elapsed.
 	// - "False": The wait time has not elapsed.
-	AfterStageTaskConditionApprovalWaitTimeElapsed AfterStageTaskConditionType = "WaitTimeElapsed"
+	AfterStageTaskConditionWaitTimeElapsed AfterStageTaskConditionType = "WaitTimeElapsed"
 )
 
 // StagedUpdateRunList contains a list of StagedUpdateRun.

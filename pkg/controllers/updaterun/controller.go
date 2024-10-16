@@ -34,8 +34,6 @@ import (
 	"go.goms.io/fleet/pkg/utils/informer"
 )
 
-var errStagedUpdatedFailed = fmt.Errorf("failed to continue the StagedUpdateRun")
-
 // Reconciler reconciles a StagedUpdateRun object
 type Reconciler struct {
 	client.Client
@@ -71,10 +69,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req runtime.Request) (runtim
 		klog.ErrorS(err, "Failed to add the finalizer to the stagedUpdateRun", "stagedUpdateRun", runObjRef)
 		return runtime.Result{}, err
 	}
-
+	updatingStageIndex := -1
+	var tobeUpdatedBinding, tobeDeletedBinding []*placementv1beta1.ClusterResourceBinding
+	var err error
 	if !condition.IsConditionStatusTrue(meta.FindStatusCondition(updateRun.Status.Conditions, string(placementv1alpha1.StagedUpdateRunConditionInitialized)), updateRun.Generation) {
 		klog.V(2).InfoS("The stagedUpdateRun is not initialized", "stagedUpdateRun", runObjRef)
-		if err := r.initialize(ctx, &updateRun); err != nil {
+		if tobeUpdatedBinding, tobeDeletedBinding, err = r.initialize(ctx, &updateRun); err != nil {
 			klog.ErrorS(err, "Failed to initialize the stagedUpdateRun", "stagedUpdateRun", runObjRef)
 			// errInitializedFailed cannot be retried
 			if errors.Is(err, errInitializedFailed) {
@@ -82,10 +82,36 @@ func (r *Reconciler) Reconcile(ctx context.Context, req runtime.Request) (runtim
 			}
 			return runtime.Result{}, err
 		}
+		updatingStageIndex = 0 //start from the first stage
+		klog.V(2).InfoS("The stagedUpdateRun is initialized", "stagedUpdateRun", runObjRef)
+	} else {
+		klog.V(2).InfoS("The stagedUpdateRun is initialized", "stagedUpdateRun", runObjRef)
+		// Check if the stagedUpdateRun is finished
+		finishedCond := meta.FindStatusCondition(updateRun.Status.Conditions, string(placementv1alpha1.StagedUpdateRunConditionSucceeded))
+		if condition.IsConditionStatusTrue(finishedCond, updateRun.Generation) || condition.IsConditionStatusFalse(finishedCond, updateRun.Generation) {
+			klog.V(2).InfoS("The stagedUpdateRun is finished", "finishedSuccessfully", finishedCond.Status, "stagedUpdateRun", runObjRef)
+			return runtime.Result{}, nil
+		}
+		// Validate the stagedUpdateRun status to ensure the update can be continued and get the updating stage index and cluster indices
+		if updatingStageIndex, tobeUpdatedBinding, tobeDeletedBinding, err = r.validateUpdateRunStatus(ctx, &updateRun); err != nil {
+			// errStagedUpdatedAborted cannot be retried
+			if errors.Is(err, errStagedUpdatedAborted) {
+				return runtime.Result{}, r.recordUpdateRunFailed(ctx, &updateRun, err.Error())
+			}
+			return runtime.Result{}, err
+		}
+		klog.V(2).InfoS("The stagedUpdateRun is validated", "stagedUpdateRun", runObjRef)
 	}
-
-	// TODO: Implement stage by stage update logic
-	return runtime.Result{}, nil
+	// the previous run is completed but the update probably failed
+	if updatingStageIndex == -1 {
+		klog.V(2).InfoS("the stagedUpdateRun is completed", "stagedUpdateRun", runObjRef)
+		return runtime.Result{}, r.recordUpdateRunSucceeded(ctx, &updateRun)
+	}
+	// execute the update run
+	klog.V(2).InfoS("Continue to execute the stagedUpdateRun", "updatingStageIndex", updatingStageIndex, "stagedUpdateRun", runObjRef)
+	finished, executeErr := r.executeUpdateRun(ctx, &updateRun, updatingStageIndex, tobeUpdatedBinding, tobeDeletedBinding)
+	// requeue if the update run is not finished or there is an execute error
+	return runtime.Result{Requeue: !finished}, executeErr
 }
 
 // handleDelete handles the deletion of the stagedUpdateRun object
