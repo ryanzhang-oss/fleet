@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	placementv1alpha1 "go.goms.io/fleet/apis/placement/v1alpha1"
 	placementv1beta1 "go.goms.io/fleet/apis/placement/v1beta1"
@@ -171,7 +172,7 @@ func (r *Reconciler) checkAfterStageTasksStatus(ctx context.Context, updatingSta
 			// check if the approval request has been created
 			approvalRequest := placementv1alpha1.ApprovalRequest{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      fmt.Sprintf("%s-%s", updateRun.Name, updatingStage.Name),
+					Name:      updatingStageStatus.AfterStageTaskStatus[i].ApprovalRequestName,
 					Namespace: updateRun.Namespace,
 					Labels: map[string]string{
 						placementv1alpha1.TargetUpdatingStageNameLabel:   updatingStage.Name,
@@ -184,17 +185,31 @@ func (r *Reconciler) checkAfterStageTasksStatus(ctx context.Context, updatingSta
 					TargetStage:     updatingStage.Name,
 				},
 			}
-			err := r.Create(ctx, &approvalRequest)
-			if err != nil {
+			if err := r.Create(ctx, &approvalRequest); err != nil {
 				if apierrors.IsAlreadyExists(err) {
-					klog.V(2).InfoS("The approval request has been created", "stage", updatingStage.Name, "stagedUpdateRun", klog.KObj(updateRun))
+					// the task already exists
 					markAfterStageRequestCreated(&updatingStageStatus.AfterStageTaskStatus[i], updateRun.Generation)
+					if err = r.Get(ctx, client.ObjectKeyFromObject(&approvalRequest), &approvalRequest); err != nil {
+						klog.ErrorS(err, "Failed to get the already existing approval request", "approvalRequest", klog.KObj(&approvalRequest), "stage", updatingStage.Name, "stagedUpdateRun", klog.KObj(updateRun))
+						return false, err
+					}
+					if !condition.IsConditionStatusTrue(meta.FindStatusCondition(approvalRequest.Status.Conditions, string(placementv1alpha1.ApprovalRequestConditionApproved)), approvalRequest.Generation) {
+						klog.V(2).InfoS("The approval request has not been approved yet", "stage", updatingStage.Name, "stagedUpdateRun", klog.KObj(updateRun))
+						return false, nil
+					}
+					klog.V(2).InfoS("The approval request has been approved", "stage", updatingStage.Name, "stagedUpdateRun", klog.KObj(updateRun))
+					markAfterStageRequestApproved(&updatingStageStatus.AfterStageTaskStatus[i], updateRun.Generation)
+				} else {
+					// retryable error
+					klog.ErrorS(err, "Failed to create the approval request", "approvalRequest", klog.KObj(&approvalRequest), "stage", updatingStage.Name, "stagedUpdateRun", klog.KObj(updateRun))
+					return false, err
 				}
-				return false, err
+			} else {
+				// the approval request has been created for the first time
+				klog.V(2).InfoS("The approval request has been created", "stage", updatingStage.Name, "stagedUpdateRun", klog.KObj(updateRun))
+				markAfterStageRequestCreated(&updatingStageStatus.AfterStageTaskStatus[i], updateRun.Generation)
+				return false, nil
 			}
-
-			markAfterStageRequestCreated(&updatingStageStatus.AfterStageTaskStatus[i], updateRun.Generation)
-
 		}
 	}
 	return true, nil

@@ -30,4 +30,7 @@ const (
 
 	// UpdatingStageNameLabel is the label that indicates the updating stage name on a staged run related object.
 	TargetUpdatingStageNameLabel = fleetPrefix + "targetUpdatingStage"
+
+	// ApprovalTaskNameFmt is the format of the approval task name.
+	ApprovalTaskNameFmt = "%s-%s"
 )

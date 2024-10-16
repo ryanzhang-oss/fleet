@@ -275,11 +275,19 @@ func (r *Reconciler) computeRunStageStatus(ctx context.Context, scheduledBinding
 			}
 			return curStageClusters[i].Name < curStageClusters[j].Name
 		})
-		// Record the clusters in the stage
+		// Record the clusters in the stage status
 		curSageUpdatingStatus.Clusters = make([]placementv1alpha1.ClusterUpdatingStatus, len(curStageClusters))
 		for i, cluster := range curStageClusters {
 			klog.V(2).InfoS("Add a cluster to stage", "cluster", cluster.Name, "stagedUpdateStrategy", stagedUpdateStrategyName, "stage", stage.Name, "stagedUpdateRun", updateRunRef)
 			curSageUpdatingStatus.Clusters[i].ClusterName = cluster.Name
+		}
+		curSageUpdatingStatus.AfterStageTaskStatus = make([]placementv1alpha1.AfterStageTaskStatus, len(stage.AfterStageTasks))
+		// Record the after stage tasks in the stage status
+		for i, afterStageTask := range stage.AfterStageTasks {
+			curSageUpdatingStatus.AfterStageTaskStatus[i].Type = afterStageTask.Type
+			if afterStageTask.Type == placementv1alpha1.AfterStageTaskTypeApproval {
+				curSageUpdatingStatus.AfterStageTaskStatus[i].ApprovalRequestName = fmt.Sprintf(placementv1alpha1.ApprovalTaskNameFmt, updateRun.Name, stage.Name)
+			}
 		}
 		updateRun.Status.StagesStatus = append(updateRun.Status.StagesStatus, curSageUpdatingStatus)
 	}

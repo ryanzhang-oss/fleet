@@ -372,13 +372,11 @@ const (
 	// AfterStageTaskConditionApprovalRequestCreated indicates if the approval request has been created.
 	// Its condition status can be:
 	// - "True": The approval request has been created.
-	// - "False": The approval request has not been created.
 	AfterStageTaskConditionApprovalRequestCreated AfterStageTaskConditionType = "ApprovalRequestCreated"
 
 	// AfterStageTaskConditionApprovalRequestApproved indicates if the approval request has been approved.
 	// Its condition status can be:
 	// - "True": The approval request has been approved.
-	// - "False": The approval request has not been approved.
 	AfterStageTaskConditionApprovalRequestApproved AfterStageTaskConditionType = "ApprovalRequestApproved"
 
 	// AfterStageTaskConditionWaitTimeElapsed indicates if the wait time after each stage has elapsed.
@@ -456,15 +454,7 @@ const (
 	// ApprovalRequestConditionApproved indicates if the approval request was approved.
 	// Its condition status can be:
 	// - "True": The request is approved.
-	// - "False": The request is not approved.
 	ApprovalRequestConditionApproved ApprovalRequestConditionType = "Approved"
-
-	// ApprovalRequestConditionApprovalAccepted indicates whether the approval request is accepted by the update process.
-	// Its condition status can be:
-	// - "True": The approval request is accepted.
-	// - "False": The approval request is not accepted.
-	// - "Unknown": The approval request is not yet approved.
-	ApprovalRequestConditionApprovalAccepted ApprovalRequestConditionType = "ApprovalAccepted"
 )
 
 // ApprovalRequestList contains a list of ApprovalRequest.
