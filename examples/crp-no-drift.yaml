@@ -1,0 +1,53 @@
+apiVersion: placement.kubernetes-fleet.io/v1beta1
+kind: ClusterResourcePlacement
+metadata:
+  name: crp-kubecon-eu
+spec:
+  policy:
+    placementType: PickN
+    numberOfClusters: 3
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: fleet.azure.com/location
+        whenUnsatisfiable: DoNotSchedule
+    affinity:
+      clusterAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 20
+            preference:
+              labelSelector:
+                matchExpressions:
+                  - key: env
+                    operator: In
+                    values:
+                      - canary
+                      - staging
+          - weight: 30
+            preference:
+              propertySorter:
+                name: kubernetes.azure.com/per-gb-memory-core-cost
+                sortOrder: Descending
+          - weight: 50
+            preference:
+              propertySorter:
+                name: resources.kubernetes-fleet.io/available-cpu
+                sortOrder: Descending
+        requiredDuringSchedulingIgnoredDuringExecution:
+          clusterSelectorTerms:
+            - propertySelector:
+                matchExpressions:
+                  - name: resources.kubernetes-fleet.io/available-memory
+                    operator: Gt
+                    values:
+                      - "13G"
+  strategy:
+    applyStrategy: 
+      type: ClientSideApply
+      whenToTakeOver: Always 
+      whenToApply: IfNotDrifted
+  resourceSelectors:
+  - group: ""
+    kind: Namespace
+    name: multi-cluster-app
+    version: v1
+  revisionHistoryLimit: 10
